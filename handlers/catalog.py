@@ -112,7 +112,7 @@ async def show_single_product_card(callback: types.CallbackQuery):
             SELECT sku, \
                    artist_name, \
                    album_title, \
-                   description, \
+                   album_description, \
                    format,
                    color, \
                    condition_media, \
@@ -133,7 +133,7 @@ async def show_single_product_card(callback: types.CallbackQuery):
 
     text = (
         f"🎸 **{record['artist_name']} — {record['album_title']}**\n\n"
-        f"📖 _{record['description']}_\n\n"
+        f"📖 _{record['album_description']}_\n\n"
         f"▫️ **Формат:** {record['format']} ({record['color']})\n"
         f"▫️ **Состояние:** {record['condition_media']}\n"
         f"▫️ **Артикул:** `{record['sku']}`\n\n"
@@ -178,6 +178,7 @@ async def show_single_product_card(callback: types.CallbackQuery):
                 reply_markup=reply_markup
             )
     except Exception as e:
+        # Улучшено логирование: теперь видно, на каком артикуле произошла ошибка
         logging.warning(f"Ошибка загрузки фото для артикула {sku}: {e}")
         await callback.message.answer(
             text,
