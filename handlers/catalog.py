@@ -107,8 +107,22 @@ async def show_release_formats(callback: types.CallbackQuery):
 @router.callback_query(F.data.startswith("item_"))
 async def show_single_product_card(callback: types.CallbackQuery):
     sku = callback.data.split("_")[1]
-    query = ("SELECT sku, artist_name, album_title, format, color, condition_media, price, "
-             "cover_image_url, release_id FROM view_vinyl_catalog WHERE sku = $1 AND stock_quantity > 0;")
+
+    query = """
+            SELECT sku, \
+                   artist_name, \
+                   album_title, \
+                   album_description, \
+                   format,
+                   color, \
+                   condition_media, \
+                   price, \
+                   cover_image_url, \
+                   release_id
+            FROM view_vinyl_catalog
+            WHERE sku = $1 \
+              AND stock_quantity > 0; \
+            """
 
     async with db.pool.acquire() as conn:
         record = await conn.fetchrow(query, sku)
@@ -118,20 +132,31 @@ async def show_single_product_card(callback: types.CallbackQuery):
         return
 
     text = (
-        f"🎸 **{record['artist_name']} — {record['album_title']}**\n\n▫️ **Формат:** {record['format']} ({record['color']})\n▫️ **Состояние:** {record['condition_media']}\n▫️ **Артикул:** `{record['sku']}`\n\n💰 **Цена:** {record['price']} руб.")
+        f"🎸 **{record['artist_name']} — {record['album_title']}**\n\n"
+        f"📖 _{record['album_description']}_\n\n"
+        f"▫️ **Формат:** {record['format']} ({record['color']})\n"
+        f"▫️ **Состояние:** {record['condition_media']}\n"
+        f"▫️ **Артикул:** `{record['sku']}`\n\n"
+        f"💰 **Цена:** {record['price']} руб."
+    )
 
-    kb = [[types.InlineKeyboardButton(text="➕ В корзину", callback_data=f"buy_{sku}")],
-          [types.InlineKeyboardButton(text="🔙 К списку изданий", callback_data=f"release_{record['release_id']}")]]
+    kb = [
+        [types.InlineKeyboardButton(text="➕ В корзину", callback_data=f"buy_{sku}")],
+        [types.InlineKeyboardButton(text="🔙 К списку изданий", callback_data=f"release_{record['release_id']}")]
+    ]
     reply_markup = types.InlineKeyboardMarkup(inline_keyboard=kb)
 
     image_path = record['cover_image_url']
     photo_to_send = None
+
     if image_path:
         if image_path.startswith("http"):
             photo_to_send = URLInputFile(image_path)
         elif os.path.exists(image_path):
             photo_to_send = FSInputFile(image_path)
-    if not photo_to_send and os.path.exists(DEFAULT_COVER_PATH): photo_to_send = FSInputFile(DEFAULT_COVER_PATH)
+
+    if not photo_to_send and os.path.exists(DEFAULT_COVER_PATH):
+        photo_to_send = FSInputFile(DEFAULT_COVER_PATH)
 
     try:
         await callback.message.delete()
@@ -140,13 +165,27 @@ async def show_single_product_card(callback: types.CallbackQuery):
 
     try:
         if photo_to_send:
-            await callback.message.answer_photo(photo=photo_to_send, caption=text, parse_mode="Markdown",
-                                                reply_markup=reply_markup)
+            await callback.message.answer_photo(
+                photo=photo_to_send,
+                caption=text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
         else:
-            await callback.message.answer(text, parse_mode="Markdown", reply_markup=reply_markup)
+            await callback.message.answer(
+                text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
     except Exception as e:
-        logging.warning(f"Ошибка загрузки фото: {e}")
-        await callback.message.answer(text, parse_mode="Markdown", reply_markup=reply_markup)
+        logging.warning(f"Ошибка загрузки фото для артикула {sku}: {e}")
+        await callback.message.answer(
+            text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+
+    await callback.answer()
 
 
 @router.callback_query(F.data == "nav_back_root")
