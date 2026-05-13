@@ -13,8 +13,24 @@ router = Router()
 
 @router.message(F.text == "💽 Каталог винила")
 @router.message(Command("catalog"))
-async def show_catalog_root(message: types.Message):
-    await message.answer("Выберите, как вы хотите искать пластинки:", reply_markup=get_catalog_categories_keyboard())
+@router.callback_query(F.data == "catalog")
+async def show_catalog_root(event: types.Message | types.CallbackQuery):
+    text = "Выберите, как вы хотите искать пластинки:"
+    keyboard = get_catalog_categories_keyboard()
+
+    # Проверяем, откуда пришел запрос: от кнопки или от команды
+    if isinstance(event, types.CallbackQuery):
+        try:
+            # Пытаемся плавно заменить текст
+            await event.message.edit_text(text, reply_markup=keyboard)
+        except Exception:
+            # Если до этого была картинка, удаляем и шлем заново
+            await event.message.delete()
+            await event.message.answer(text, reply_markup=keyboard)
+        await event.answer() # Гасим часики загрузки
+    else:
+        # Если это просто команда /catalog
+        await event.answer(text, reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "nav_artists")
@@ -49,6 +65,156 @@ async def show_genres(callback: types.CallbackQuery):
     builder.adjust(2)
     builder.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data="nav_back_root"))
     await callback.message.edit_text("🎧 **Выберите жанр:**", parse_mode="Markdown", reply_markup=builder.as_markup())
+
+
+@router.callback_query(F.data.startswith("artist_"))
+async def show_artist_portfolio(callback: types.CallbackQuery):
+    # Извлекаем ID артиста из callback_data (например, "artist_1")
+    artist_id = int(callback.data.split("_")[1])
+
+    async with db.pool.acquire() as conn:
+        # 1. Получаем профиль исполнителя (имя, страна, описание)
+        artist = await conn.fetchrow(
+            "SELECT name, country, description FROM artists WHERE id = $1;",
+            artist_id
+        )
+
+        # 2. Получаем все релизы этого артиста (сортируем по году выпуска)
+        releases = await conn.fetch(
+            "SELECT id, title, release_year FROM releases WHERE artist_id = $1 ORDER BY release_year;",
+            artist_id
+        )
+
+    if not artist:
+        await callback.answer("Информация об исполнителе не найдена.", show_alert=True)
+        return
+
+    # Формируем текст сводки
+    text = (
+        f"🎤 **{artist['name']}** 🌍 _{artist['country']}_\n\n"
+        f"📖 {artist['description']}\n\n"
+        f"👇 **Выберите альбом для просмотра изданий:**"
+    )
+
+    # Динамически собираем клавиатуру из альбомов
+    builder = InlineKeyboardBuilder()
+
+    if releases:
+        for r in releases:
+            builder.button(
+                text=f"💿 {r['title']} ({r['release_year']})",
+                callback_data=f"release_{r['id']}"
+            )
+    else:
+        text += "\n\n_(К сожалению, альбомов этого исполнителя сейчас нет в каталоге)_"
+
+    # Добавляем кнопку возврата на предыдущий уровень (например, к списку артистов или жанров)
+    builder.button(text="🔙 Назад", callback_data="back_to_catalog_root")
+
+    # Выстраиваем кнопки в один столбец для удобства чтения на телефоне
+    builder.adjust(1)
+
+    # Обновляем сообщение
+    try:
+        # Если до этого была картинка, edit_text может выдать ошибку,
+        # поэтому надежнее удалить старое сообщение и прислать новое,
+        # либо использовать edit_caption, если картинку оставляем.
+        # Для простоты текстового меню:
+        await callback.message.delete()
+        await callback.message.answer(
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=builder.as_markup()
+        )
+    except Exception:
+        # Резервный вариант, если удаление не сработало
+        await callback.message.edit_text(
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=builder.as_markup()
+        )
+
+    await callback.answer()
+
+
+@router.callback_query(F.data == "back_to_catalog_root")
+async def show_all_artists(callback: types.CallbackQuery):
+    # Получаем список всех артистов из БД, сортируем по алфавиту
+    async with db.pool.acquire() as conn:
+        artists = await conn.fetch("SELECT id, name FROM artists ORDER BY name;")
+
+    if not artists:
+        await callback.answer("Каталог исполнителей пока пуст.", show_alert=True)
+        return
+
+    text = "🎸 **Каталог исполнителей:**\nВыберите группу, чтобы посмотреть альбомы:"
+
+    builder = InlineKeyboardBuilder()
+
+    # Генерируем кнопки для каждого артиста
+    for artist in artists:
+        builder.button(
+            text=f"{artist['name']}",
+            callback_data=f"artist_{artist['id']}"
+        )
+
+    # Выстраиваем кнопки исполнителей по 2 в ряд
+    builder.adjust(2)
+
+    # --- ДОБАВЛЕНО: Кнопка выхода ---
+    # Метод row() принудительно создает новую строку на всю ширину сообщения
+    builder.row(types.InlineKeyboardButton(text="🏠 На главную", callback_data="main_menu"))
+
+    try:
+        await callback.message.edit_text(
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=builder.as_markup()
+        )
+    except Exception:
+        await callback.message.delete()
+        await callback.message.answer(
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=builder.as_markup()
+        )
+
+    await callback.answer()
+
+
+@router.callback_query(F.data == "main_menu")
+async def back_to_main_menu(callback: types.CallbackQuery):
+    text = "🏠 **Главное меню**\nДобро пожаловать в магазин винила! Выберите нужное действие:"
+
+    # Создаем кнопки главного меню
+    builder = InlineKeyboardBuilder()
+    # В хэндлере главного меню:
+    builder.button(text="💿 Открыть каталог", callback_data="catalog")
+    # Если у вас есть корзина или другие разделы, раскомментируйте и добавьте их сюда:
+    # builder.button(text="🛒 Моя корзина", callback_data="cart_view")
+    # builder.button(text="📦 Мои заказы", callback_data="my_orders")
+
+    builder.adjust(1)  # Кнопки друг под другом
+
+    try:
+        # Если меню вызывается из текстового сообщения, плавно меняем текст
+        await callback.message.edit_text(
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=builder.as_markup()
+        )
+    except Exception:
+        # Если мы возвращаемся из карточки с фото, плавно изменить не получится.
+        # Удаляем старое сообщение с картинкой и шлем новое текстовое.
+        await callback.message.delete()
+        await callback.message.answer(
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=builder.as_markup()
+        )
+
+    # Обязательно "гасим" часики загрузки на нажатой кнопке
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("artist_") | F.data.startswith("genre_"))
